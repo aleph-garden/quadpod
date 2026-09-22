@@ -1,4 +1,5 @@
-//! CORS, `Allow`, the `Accept-Put`/`Post`/`Patch` advertisements and `WAC-Allow`.
+//! CORS, `Allow`, the `Accept-Put`/`Post`/`Patch` advertisements, `WAC-Allow`
+//! and the LDP type advertisement.
 
 use super::fixture::*;
 
@@ -353,4 +354,81 @@ async fn the_root_does_not_advertise_delete() {
     let get = f.owner_request("GET", "/").body(Body::empty()).unwrap();
     let res = f.app.oneshot(get).await.unwrap();
     assert_eq!(res.headers().get(header::ALLOW).unwrap(), "GET, HEAD, POST, PUT, PATCH, OPTIONS");
+}
+
+/// Every `Link` field line on a response, joined the way a browser's
+/// `Headers.get` joins them, which is what a client parses.
+fn links(res: &axum::response::Response) -> String {
+    res.headers().get_all(header::LINK)
+        .iter().map(|v| v.to_str().unwrap()).collect::<Vec<_>>().join(", ")
+}
+
+// LDP §5.2.1.4: a server exposing containers MUST advertise the container
+// type with `Link; rel="type"` on responses to the container's own URL.
+// Without it a client that reads headers has no way to learn that a resource
+// is a container, and the body is the only place saying so.
+#[tokio::test]
+async fn a_container_advertises_its_ldp_type() {
+    let f = fixture().await;
+    f.put_turtle("/notes/a", "<#it> <http://schema.org/name> \"a\" .").await;
+
+    for path in ["/", "/notes/"] {
+        let get = f.owner_request("GET", path).body(Body::empty()).unwrap();
+        let res = f.app.clone().oneshot(get).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "{path}");
+        let link = links(&res);
+        assert!(link.contains("<http://www.w3.org/ns/ldp#BasicContainer>; rel=\"type\""), "{path}: {link}");
+        assert!(link.contains("<http://www.w3.org/ns/ldp#Container>; rel=\"type\""), "{path}: {link}");
+        // The auxiliary advertisement is a separate concern and must survive
+        // beside it: both travel in `Link`, and one overwriting the other
+        // would take the ACL URL away from every client mid-create-flow.
+        assert!(link.contains("rel=\"acl\""), "{path}: {link}");
+    }
+}
+
+// One link per `Link` field line, the mirror image of the `Vary` rule above.
+// The conformance harness parses each line whole through Jersey's
+// `Link.valueOf`, which refuses a line carrying two links and aborts the run
+// during `PREPARE SERVER` rather than failing one scenario.
+#[tokio::test]
+async fn each_link_field_line_carries_exactly_one_link() {
+    let f = fixture().await;
+    let get = f.owner_request("GET", "/").body(Body::empty()).unwrap();
+    let res = f.app.oneshot(get).await.unwrap();
+    let lines: Vec<&str> = res.headers().get_all(header::LINK)
+        .iter().map(|v| v.to_str().unwrap()).collect();
+    assert_eq!(lines.len(), 3, "the acl link and the two container types: {lines:?}");
+    for line in &lines {
+        assert_eq!(line.matches('<').count(), 1, "two links on one field line: {line}");
+    }
+}
+
+// HEAD answers the same headers as GET, and a client that only needs to know
+// what a URL is uses HEAD.
+#[tokio::test]
+async fn head_on_a_container_advertises_the_same_type() {
+    let f = fixture().await;
+    let head = f.owner_request("HEAD", "/").body(Body::empty()).unwrap();
+    let res = f.app.oneshot(head).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert!(links(&res).contains("<http://www.w3.org/ns/ldp#BasicContainer>; rel=\"type\""));
+}
+
+// The advertisement is the container's alone. A resource that carried it
+// would be read as a container by every client that trusts the header.
+#[tokio::test]
+async fn a_resource_advertises_no_container_type() {
+    let f = fixture().await;
+    f.put_turtle("/notes/a", "<#it> <http://schema.org/name> \"a\" .").await;
+    f.put_blob("/notes/b.bin", "application/octet-stream", b"\x00\x01bytes").await;
+
+    for path in ["/notes/a", "/notes/b.bin"] {
+        let get = f.owner_request("GET", path).body(Body::empty()).unwrap();
+        let res = f.app.clone().oneshot(get).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "{path}");
+        let link = links(&res);
+        assert!(!link.contains("ldp#Container"), "{path}: {link}");
+        assert!(!link.contains("ldp#BasicContainer"), "{path}: {link}");
+        assert!(link.contains("rel=\"acl\""), "{path}: {link}");
+    }
 }

@@ -339,9 +339,36 @@ fn accept_write(target: &Target, method: Write, version: RdfVersion) -> Option<S
     Some(types.join(", "))
 }
 
+/// The types a target advertises with `Link; rel="type"`.
+///
+/// LDP §5.2.1.4 makes this a MUST for a container, and a client that reads
+/// headers alone has no other way to learn that a URL is one: this pod states
+/// containment in the representation, so without the header the claim lives
+/// only in the body and a client has to parse Turtle before it knows what it
+/// is holding.
+///
+/// Both types go out, which the same section allows ("LDP servers MAY provide
+/// additional HTTP `Link: rel="type"` headers"). `ldp:BasicContainer` is the
+/// container type this server supports; `ldp:Container` is the supertype a
+/// client matches on. That pair is exactly what
+/// [`container::ensure_container`] writes into the stored graph, so the header
+/// and the representation cannot come to disagree.
+///
+/// Empty for everything else. LDP §4.2.1.4 asks for an `ldp:Resource`
+/// advertisement on every LDPR and this pod sends none, so a header-only
+/// client can tell a container from everything else and cannot tell an LDP
+/// resource from a URL this server never heard of.
+fn type_links(target: &Target) -> &'static [&'static str] {
+    match target {
+        Target::Container(_) => &[container::LDP_BASIC_CONTAINER, container::LDP_CONTAINER],
+        Target::Resource(_) | Target::Aux(_) => &[],
+    }
+}
+
 /// Attach [`allowed_methods`] to a read that succeeded, Protocol §4.1 makes
 /// it a MUST on `GET`/`HEAD`, alongside the three `Accept-*` headers §5.3
-/// makes a MUST beside it.
+/// makes a MUST beside it, and [`type_links`], which LDP §5.2.1.4 makes one
+/// on a container.
 fn with_allow(mut res: Response, target: &Target, version: RdfVersion) -> Response {
     res.headers_mut().insert(
         header::ALLOW,
@@ -355,6 +382,24 @@ fn with_allow(mut res: Response, target: &Target, version: RdfVersion) -> Respon
                 value.parse().expect("media types and version labels are header-safe"),
             );
         }
+    }
+    for iri in type_links(target) {
+        // `append`, for the reason [`with_aux_links`] appends: the `acl`
+        // advertisement is already on this response, and `insert` would
+        // replace it and take the ACL URL away from a client that is about to
+        // construct `<url>.acl` for itself.
+        //
+        // **One link per field line**, which is the other half of the same
+        // rule. RFC 9110 §5.3 lets a list-valued field repeat, and the
+        // conformance harness parses each `Link` line whole through Jersey's
+        // `Link.valueOf`, which rejects a line carrying two links and aborts
+        // the run during `PREPARE SERVER`. [`aux_links`] joins its values
+        // with `,` and [`AuxKind`] has one variant, so no field line on this
+        // pod has ever carried two links before this one.
+        res.headers_mut().append(
+            header::LINK,
+            format!("<{iri}>; rel=\"type\"").parse().expect("ldp type link is header-safe"),
+        );
     }
     res
 }

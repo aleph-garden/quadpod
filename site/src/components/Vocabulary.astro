@@ -1,0 +1,40 @@
+---
+// Every term the quadpod vocabulary defines, read from docs/ns/quadpod.ttl at
+// build time, so the page cannot disagree with the file it documents.
+import { Parser } from 'n3'
+import source from '../../../docs/ns/quadpod.ttl?raw'
+
+const NS = 'https://w3id.org/quadpod/ns#'
+const RDFS = 'http://www.w3.org/2000/01/rdf-schema#'
+const RDF_TYPE = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type'
+
+const quads = new Parser().parse(source)
+
+const terms = [...new Set(quads.map((q) => q.subject.value))]
+  .filter((iri) => iri.startsWith(NS) && iri !== NS)
+  .sort()
+  .map((iri) => {
+    const value = (predicate: string) => quads.find((q) => q.subject.value === iri && q.predicate.value === predicate)?.object.value
+    return {
+      iri,
+      name: iri.slice(NS.length),
+      type: value(RDF_TYPE)?.split(/[#/]/).pop(),
+      label: value(`${RDFS}label`),
+      comment: value(`${RDFS}comment`) ?? ''
+    }
+  })
+
+const escape = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+/** The comments are written with backticks for code, as the rest of the
+ *  documentation is. */
+const paragraphs = (text: string) =>
+  text.split(/\n\s*\n/).map((p) => escape(p.trim()).replace(/`([^`]+)`/g, '<code>$1</code>'))
+---
+
+{terms.map((term) => (
+  <section>
+    <h2 id={term.name}><code>quadpod:{term.name}</code></h2>
+    <p><code>{term.iri}</code>{term.type && <> · {term.type}</>}{term.label && <> · {term.label}</>}</p>
+    {paragraphs(term.comment).map((p) => <p set:html={p} />)}
+  </section>
+))}

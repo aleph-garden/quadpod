@@ -1,0 +1,64 @@
+name: Deploy the documentation
+
+on:
+  push:
+    branches: [main]
+    # rustdoc reads the crate, so a change under src/ changes the site too.
+    paths:
+      - 'docs/**'
+      - 'site/**'
+      - 'src/**'
+      - 'Cargo.*'
+      - 'flake.*'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-quadpod-docs
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # rustdoc needs the same toolchain the crate builds with, which only the
+      # flake provides; bun comes from the same dev shell (ADR-15).
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - id: toolchain
+        run: echo "id=$(nix develop -c rustc -V | tr -c '[:alnum:].' '-')" >> "$GITHUB_OUTPUT"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: docs-${{ steps.toolchain.outputs.id }}
+
+      - name: API documentation
+        run: nix develop -c cargo doc --no-deps
+
+      - name: Site
+        run: |
+          nix develop -c bun install --cwd site
+          nix develop -c bun run --cwd site build
+
+      # Starlight writes the pages under dist/quadpod/docs/, the path the Worker
+      # serves them at; rustdoc's output goes beside them under reference/api/.
+      - name: Put the API documentation into the site
+        run: |
+          mkdir -p site/dist/quadpod/docs/reference/api
+          cp -R target/doc/. site/dist/quadpod/docs/reference/api/
+
+      - name: Deploy the documentation Worker
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # Before 4, Wrangler refuses a route with a path component for a
+          # Worker that carries static assets.
+          wranglerVersion: '4.136.2'
+          command: deploy --config site/wrangler.toml

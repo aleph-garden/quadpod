@@ -1,0 +1,30 @@
+---
+// A status line in the maturity vocabulary of the Aleph Garden narrative
+// guide (planning/research/narrative-and-voice.md, section 5). It heads the
+// section it describes, carries the date it was last checked, and its body is
+// the one sentence that tells the reader what the label means for them.
+import { Aside } from '@astrojs/starlight/components'
+
+const LABELS = {
+  Running: 'tip',
+  Buildable: 'tip',
+  Prototype: 'caution',
+  Specified: 'note',
+  Note: 'note',
+  Parked: 'danger'
+} as const
+
+interface Props {
+  label: keyof typeof LABELS
+  checked: string
+}
+const { label, checked } = Astro.props
+if (!(label in LABELS)) {
+  throw new Error(`Status label "${label}" is not one of ${Object.keys(LABELS).join(', ')}`)
+}
+if (!/^\d{4}-\d{2}-\d{2}$/.test(checked)) {
+  throw new Error(`Status "${label}" carries checked="${checked}", which is not a YYYY-MM-DD date`)
+}
+---
+
+<Aside type={LABELS[label]} title={`${label}, checked ${checked}`}><slot /></Aside>

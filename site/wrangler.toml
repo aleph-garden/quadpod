@@ -1,0 +1,25 @@
+# The quadpod documentation, deployed as its own Worker. It owns one path
+# prefix on aleph.garden and nothing else; the root site is a separate Worker
+# deployed from the www repository. Where two route patterns match a request,
+# Cloudflare picks the more specific one, so the prefix below wins over that
+# Worker's catch-all.
+name = "quadpod-docs"
+compatibility_date = "2026-09-01"
+
+# Without the second pattern a reader who trims the URL to the prefix leaves
+# this Worker and lands on the root site.
+[[routes]]
+pattern = "aleph.garden/quadpod/docs/*"
+zone_name = "aleph.garden"
+
+[[routes]]
+pattern = "aleph.garden/quadpod/docs"
+zone_name = "aleph.garden"
+
+# No `main`: nothing here needs a request handler. Starlight writes a
+# directory index per page, rustdoc's output sits beside them under
+# reference/api/, and Starlight's 404 document answers anything else.
+[assets]
+directory = "./dist/"
+html_handling = "auto-trailing-slash"
+not_found_handling = "404-page"

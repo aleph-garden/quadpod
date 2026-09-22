@@ -35,6 +35,8 @@
             # workflow so the version is pinned by flake.lock like every other
             # tool, and so `cargo audit` locally is the same command CI runs.
             cargo-audit
+            # The documentation site under site/ builds with bun (ADR-15).
+            bun
             clang
             libclang
             pkg-config

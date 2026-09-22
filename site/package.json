@@ -1,0 +1,25 @@
+{
+  "name": "quadpod-docs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "check": "astro check"
+  },
+  "dependencies": {
+    "@astrojs/markdown-remark": "^7.3.1",
+    "@astrojs/starlight": "^0.42.1",
+    "astro": "^7.3.3",
+    "n3": "^1.26.0",
+    "sharp": "^0.35.4"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.10",
+    "@types/n3": "^1.26.0",
+    "typescript": "^6",
+    "wrangler": "^4.133.0"
+  },
+  "license": "MIT"
+}

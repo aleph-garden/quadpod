@@ -1,4 +1,6 @@
-# URI Space and Reserved Paths
+---
+title: "URI Space and Reserved Paths"
+---
 
 This is the contract between this pod and its clients about **which URLs mean what**. It is
 normative for the server and for anyone writing data into it.

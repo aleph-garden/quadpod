@@ -1,0 +1,308 @@
+---
+title: Control access
+description: How a client proves who it is, and how an ACL decides what that identity may do.
+---
+
+import Status from '@components/Status.astro'
+
+<Status label="Prototype" checked="2026-09-22">Authentication and Web Access Control are implemented and tested, and three WAC suite scenarios still fail: deleting a container on inherited `acl:Write` alone succeeds where the suite expects a refusal.</Status>
+
+Every request goes through two steps. Authentication turns the request's credentials into
+an identity, a WebID, or into nobody at all. Authorization then asks the ACL that governs
+the target whether that identity holds the access mode the method needs. The pod has no
+owner bypass: after the first start, the ACLs alone decide, for the owner too.
+
+A WebID is a URL that names a person or an agent, such as
+`https://you.example/profile/card#me`. An ACL is an RDF document of rules, each naming who
+gets which modes on which resource. Both come from
+[Solid](https://solidproject.org/): authentication follows Solid-OIDC, authorization
+follows Web Access Control (WAC).
+
+## Authentication
+
+<Status label="Prototype" checked="2026-09-22">The only issuer this pod has run against is Community Solid Server, in the conformance harness over plain HTTP on loopback, so your own identity provider is the first untested piece.</Status>
+
+A client sends two headers:
+
+```http
+Authorization: DPoP <access token>
+DPoP: <proof>
+```
+
+The access token is a signed JWT from an identity provider, called the issuer. It carries a
+`webid` claim and a `cnf.jkt` claim, the thumbprint of a key the client holds. The proof is
+a second JWT, signed with that key for this one request: it names the method (`htm`) and
+the URL (`htu`), carries a timestamp (`iat`) and a unique identifier (`jti`). The scheme is
+DPoP, Demonstration of Proof-of-Possession (RFC 9449). A token copied out of a log is
+useless without the key.
+
+The pod accepts a request as that WebID once all of these hold:
+
+- The token's signature verifies against a key the issuer publishes. The pod finds the
+  keys through the issuer's OIDC discovery document and caches them for five minutes. The
+  algorithm follows the published key, ES256 or RS256, and the token's own header has no
+  say in it.
+- The token has not expired.
+- The WebID profile named by `webid` lists the token's issuer under `solid:oidcIssuer`. A
+  token signed by an issuer the WebID never named is refused, whatever its signature.
+- The proof is signed ES256 or RS256 ([ADR-3](decisions.md#adr-3)), and its key matches
+  `cnf.jkt`.
+- The proof's `htm` is the request method and its `htu` is `--base-uri` plus the request
+  path exactly as sent. The pod never reads the host from the socket or from
+  `X-Forwarded-*` headers.
+- The proof's `iat` is at most five minutes old, and at most five seconds in the future.
+- The proof's `jti` has not been seen before. The set of seen identifiers lives in the
+  process's memory, so a restart forgets it.
+
+A request with neither header is anonymous. A request that presents credentials and fails
+any check gets `401`, and never falls back to anonymous. The `Bearer` scheme is refused in
+any spelling.
+
+When the ACL refuses, an anonymous caller gets `401` with
+`WWW-Authenticate: DPoP algs="ES256 RS256"`, and an authenticated one gets `403`.
+
+The issuer's discovery document, its keys and the WebID profile are fetched while the
+request is still unauthenticated, from URLs the token names. Those fetches go over HTTPS
+only, to public addresses only, with no redirects. `--allow-insecure-host` opens one named
+host for local development; [Run a pod](/quadpod/docs/run/) covers it.
+
+The pod carries the core of its own issuer ([ADR-9](decisions.md#adr-9)), and no endpoint
+hands a token to a client yet. Every token today comes from an identity provider you run
+elsewhere.
+
+### Trusted issuers and audience
+
+<Status label="Prototype" checked="2026-09-22">Without `--trusted-issuer`, any issuer on the internet may present a token, and the pod fetches that issuer's keys before the WebID check can refuse it.</Status>
+
+`--trusted-issuer` names an issuer whose tokens the pod considers. Give it once per issuer,
+or as a comma-separated list in `POD_TRUSTED_ISSUERS`. A token from any other issuer is
+refused before the pod fetches anything. The comparison ignores a trailing slash. With no
+`--trusted-issuer` at all, every issuer proceeds to the WebID check, which remains the
+control that decides who a token may speak for.
+
+`--expected-audience` names a value the token's `aud` claim must contain. Unset, the pod
+checks no audience. Solid-OIDC asks issuers to put `solid` in `aud`, and the tokens this
+pod's issuer core mints carry exactly that. Both flags are listed with their environment
+variables in the [configuration reference](reference/configuration.md).
+
+### Plain bearer tokens
+
+<Status label="Note" checked="2026-09-22">[Accepting bearer tokens alongside DPoP](bearer-auth-alternative.md) is a written idea with no design and no code; the shape may change entirely.</Status>
+
+The note records when a bearer token would be an honest trade, a daemon on a private
+network the owner controls, and what would have to hold if it were added: opt-in per
+deployment, short token lifetimes, and the authentication mode visible in logs. Today the
+pod refuses every `Bearer` credential.
+
+## The root ACL
+
+<Status label="Prototype" checked="2026-09-22">`--reset-root-acl` overwrites the whole root ACL, so every share you made at the root is gone after it and has to be written again.</Status>
+
+WAC grants nothing by default. With no ACL anywhere, every request would be refused,
+including the owner's. So on every start, the pod checks whether the root container `/` has
+an ACL, and if it has none, writes this one for the WebID in `--owner-webid`:
+
+```turtle
+@prefix acl: <http://www.w3.org/ns/auth/acl#> .
+
+<#owner> a acl:Authorization ;
+    acl:agent <https://you.example/profile/card#me> ;
+    acl:accessTo </> ;
+    acl:default </> ;
+    acl:mode acl:Read, acl:Write, acl:Control .
+```
+
+The owner gets Read, Write and Control on the root, and through `acl:default` on everything
+below it that has no ACL of its own. Nobody else gets anything.
+
+Once the root ACL exists, a restart leaves it alone. Edits the owner made survive, removals
+included: a restart never brings back an owner rule that was deleted.
+
+An ACL that exists and grants nothing to anyone locks everyone out, the owner included,
+and removing it needs the Control it just took away. At the root there is one way back:
+restart the pod with `--reset-root-acl` (or `POD_RESET_ROOT_ACL=1`), which replaces the root
+ACL with the owner rule above. The flag accepts `1`, `0`, `true`, `false`, `yes`, `no`,
+`on` and `off`. Take it off again after the restart, or every later start overwrites the
+root ACL too.
+
+## Writing an ACL
+
+<Status label="Prototype" checked="2026-09-22">An ACL you empty anywhere below the root has no way back, over HTTP or from the command line.</Status>
+
+Every resource and container can have its own ACL, at its own URL. Find that URL in the
+`Link` header with `rel="acl"`, which the pod sends on a successful `GET` or `HEAD`, on a
+`404` for a resource not written yet, on `401` and `403`, and on `201`:
+
+```sh
+curl -I http://localhost:3000/photos/ \
+  -H "Authorization: DPoP $TOKEN" -H "DPoP: $PROOF"
+```
+
+```http
+Link: <http://localhost:3000/.aux/photos/.acl>; rel="acl"
+```
+
+The mapping from a resource to its ACL URL is written down in the
+[URI space contract](uri-space.md#auxiliary-resources), and a client
+[discovers it from the header](uri-space.md#do-not-construct-auxiliary-urls-discover-them)
+and never builds it by hand. To a caller with Control, a `404` from the ACL URL means the
+resource has no ACL of its own and inherits one.
+
+Write the ACL with `PUT`:
+
+```sh
+curl -X PUT http://localhost:3000/.aux/photos/.acl \
+  -H "Authorization: DPoP $TOKEN" -H "DPoP: $PROOF" \
+  -H 'Content-Type: text/turtle' \
+  --data-binary @photos.acl.ttl
+```
+
+Reading, writing or deleting an ACL needs `acl:Control` on the resource it governs. The
+resource has to exist first: an ACL for a missing resource gets `404`. Deleting a resource
+deletes its ACL with it. An ACL holds at most 1,000 triples, and a larger one gets `413`.
+
+An ACL is parsed with its own URL as base, so inside `/.aux/photos/.acl`, `<>` means the ACL
+document. Name the resource as `</photos/>` or by its full URL.
+
+### What a rule says
+
+A rule is a set of triples on one subject, usually a fragment such as `<#owner>`. The type
+triple `a acl:Authorization` is optional ([ADR-5](decisions.md#adr-5)). A rule needs three
+things:
+
+**Scope.** `acl:accessTo <resource>` applies the rule to the resource the ACL belongs to.
+`acl:default <container>` applies it to everything below the container that has no ACL of
+its own. The two stay apart: an `acl:accessTo` rule on a container's ACL covers the
+container, and nothing inside it.
+
+**Agent.** The pod reads three forms:
+
+| Triple | Matches |
+|---|---|
+| `acl:agent <webid>` | that WebID exactly |
+| `acl:agentClass acl:AuthenticatedAgent` | any request with a verified WebID |
+| `acl:agentClass foaf:Agent` | everyone, anonymous requests included |
+
+A rule that names its agent any other way, such as `acl:agentGroup`, matches nobody.
+`acl:origin` is not read, so a rule applies whichever application sends the request.
+
+**Mode.**
+
+| Mode | Allows |
+|---|---|
+| `acl:Read` | reading the resource |
+| `acl:Append` | adding to it: a new member in a container, inserted triples in a `PATCH` |
+| `acl:Write` | changing and deleting it. Write includes Append |
+| `acl:Control` | reading and writing its ACL. Control includes neither Read nor Write |
+
+What each method needs:
+
+| Request | Needs |
+|---|---|
+| `GET`, `HEAD` | Read on the target |
+| `PUT` of a new resource | Write on the target, and Append on the container it lands in and on every missing container the pod creates on the way |
+| `PUT` over an existing resource | Write on the target |
+| `POST` | Append on the container. See [below](#post-authorizes-the-container) |
+| `PATCH` | Append, plus Read for conditions or deletions, plus Write for deletions |
+| `DELETE` | Write on the target, Write on its container, and Control if the target has an ACL of its own |
+
+A successful read carries a `WAC-Allow` header listing what the caller and an anonymous
+caller may do, for example `user="read write append control",public=""`.
+
+When a `PUT` writes an ACL that grants no mode to anyone, the pod accepts it and answers
+`201` with a `Warning: 199` header saying so. A document of triples that match nobody,
+because `acl:accessTo` names a different resource, gets the same warning as an empty one.
+
+## The nearest ACL wins
+
+<Status label="Prototype" checked="2026-09-22">Replace an ACL without copying your own Control rule into it and you lose that subtree for good, and no warning tells you, because the ACL still grants something to someone.</Status>
+
+To decide a request, the pod looks for an ACL on the target itself. If there is none, it
+walks up through the containers above it and takes the first ACL it finds, ending at the
+root. That one ACL decides alone. Rules in ACLs further up are never consulted, and the
+nearest ACL does not merge with its ancestors'. WAC requires this, because a merge would
+make it impossible to narrow access on a subtree.
+
+For someone writing ACLs this means one thing: **an ACL you write replaces everything above
+it for its subtree, including the owner's grant from the root.** Every ACL has to repeat the
+rules you still want.
+
+Say you want Bob to read `/photos/` and everything in it. The obvious ACL is wrong:
+
+```turtle
+@prefix acl: <http://www.w3.org/ns/auth/acl#> .
+
+# Wrong: this is now the only policy for /photos/ and below.
+<#bob>
+    acl:agent <https://bob.example/profile/card#me> ;
+    acl:accessTo </photos/> ;
+    acl:default </photos/> ;
+    acl:mode acl:Read .
+```
+
+After this `PUT`, Bob can read. You cannot: the root ACL's rule for you is above `/photos/`,
+and the walk stops at this ACL before it gets there. You also hold no Control on `/photos/`
+anymore, so you cannot edit or delete this ACL, and no Write, so you cannot delete
+`/photos/` either. `--reset-root-acl` resets only the root ACL. The subtree is gone for
+good.
+
+The right ACL carries your rule too:
+
+```turtle
+@prefix acl: <http://www.w3.org/ns/auth/acl#> .
+
+<#owner>
+    acl:agent <https://you.example/profile/card#me> ;
+    acl:accessTo </photos/> ;
+    acl:default </photos/> ;
+    acl:mode acl:Read, acl:Write, acl:Control .
+
+<#bob>
+    acl:agent <https://bob.example/profile/card#me> ;
+    acl:accessTo </photos/> ;
+    acl:default </photos/> ;
+    acl:mode acl:Read .
+```
+
+Both rules carry `acl:accessTo` and `acl:default`. Without `acl:accessTo`, a rule does not
+cover the container `/photos/` itself, and Bob could not list it. Without `acl:default`, it
+covers nothing inside, and Bob could not open `/photos/beach.jpg`.
+
+The same rule works in the other direction. To hide `/photos/private/` from Bob, write an
+ACL on `/photos/private/` that names only you. Bob's grant on `/photos/` stops at it.
+
+Set an ACL on a container before you put anything in it. Creating a resource and then
+writing its ACL is two requests, and in between the inherited policy applies.
+
+## POST authorizes the container
+
+<Status label="Prototype" checked="2026-09-22">A `POST` to a container that does not exist yet creates the container instead of answering `404`, which four conformance scenarios count as a failure.</Status>
+
+A `POST` asks the container to create a new member and pick its name. The pod checks one
+thing: Append on the container, decided by the container's own ACL through `acl:accessTo`,
+or by an inherited ACL through `acl:default`. The new member needs no grant of its own,
+because no client could hold a rule naming a resource that does not have a name yet.
+
+That makes an append-only inbox work. With this ACL on `/inbox/`, anyone authenticated can
+`POST` a message into it and read nothing:
+
+```turtle
+@prefix acl: <http://www.w3.org/ns/auth/acl#> .
+
+<#owner>
+    acl:agent <https://you.example/profile/card#me> ;
+    acl:accessTo </inbox/> ;
+    acl:default </inbox/> ;
+    acl:mode acl:Read, acl:Write, acl:Control .
+
+<#senders>
+    acl:agentClass acl:AuthenticatedAgent ;
+    acl:accessTo </inbox/> ;
+    acl:mode acl:Append .
+```
+
+The reverse also holds: in the container's own ACL, an `acl:default` Append rule covers
+only what is inside, and lets nobody `POST` into the container. `PUT` and `PATCH` still check the
+target itself, because there the client names the resource. The reasoning, and the
+conformance run that confirmed it, are in the
+[conformance findings](conformance-findings.md#ninth-run-after-the-accessto-only-post-fix).

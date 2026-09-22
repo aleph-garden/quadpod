@@ -1,4 +1,6 @@
-# Architecture
+---
+title: "Architecture"
+---
 
 How this pod works, and why it works that way. Present tense throughout: this document
 describes the pod as it is, and changes in the same commit as the code it describes.

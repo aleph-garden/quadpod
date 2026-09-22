@@ -1,0 +1,307 @@
+---
+title: Write and read data
+description: PUT a document, GET it back in another format, and what the pod does with containers, patches, bytes and deletes.
+---
+
+import Status from '@components/Status.astro'
+
+This page is for someone writing an application against a quadpod pod. It covers the
+requests that store and fetch data, what the pod answers, and where it answers differently
+from what a Solid client might expect.
+
+<Status label="Prototype" checked="2026-09-22">The Solid conformance suite passes 638 of 652 scenarios as of its last run on 2026-08-08, over plain HTTP with an in-memory store, so a pod writing to disk has only the author's own use behind it.</Status>
+
+Every request below carries a DPoP-bound access token, as in the README. `$TOKEN` is the
+access token and `$PROOF` a DPoP proof for that request's method and URL. The pod issues no
+tokens itself, so both come from your identity provider; [Run a pod](/quadpod/docs/run/)
+covers that setup. A plain `Bearer` token is refused.
+
+## Store a document and read it back
+
+<Status label="Prototype" checked="2026-09-22">A `PUT` or `GET` against a `rocksdb:` store is outside what the conformance suite measures, since the suite runs on the in-memory store.</Status>
+
+`PUT` stores the body at the URL you name. An RDF body is parsed into triples, and those
+triples become the resource: a named graph in the pod's store, named by the resource's URL.
+
+```sh
+curl -X PUT http://localhost:3000/notes/first \
+  -H "Authorization: DPoP $TOKEN" -H "DPoP: $PROOF" \
+  -H 'Content-Type: text/turtle' \
+  --data '<#it> <http://schema.org/name> "First note" .'
+```
+
+The pod answers `201 Created` with a `Location` header, and it answers `201` for a
+replacement too. Relative IRIs in the body resolve against the resource's own URL, so `<#it>`
+above is `http://localhost:3000/notes/first#it`.
+
+A `PUT` into a container that does not exist yet creates it, and every missing container
+above it. The request above creates `/notes/` if it is not there, and `/notes/` lists
+`/notes/first` as a member.
+
+`GET` returns the triples in the format you ask for:
+
+```sh
+curl http://localhost:3000/notes/first \
+  -H "Authorization: DPoP $TOKEN" -H "DPoP: $PROOF" \
+  -H 'Accept: application/ld+json'
+```
+
+**The pod stores triples and discards the bytes they arrived in.** Prefixes, comments and
+whitespace do not survive a round trip, and neither does a signature computed over the
+document's bytes. When the bytes matter, store the document as a blob (see
+[Store files](#store-files)).
+
+**A suffix is part of the name.** `/notes/first`, `/notes/first.ttl` and
+`/notes/first.jsonld` are three different resources. The pod never reads a format from a
+file extension: the format of a write comes from `Content-Type`, the format of a read from
+`Accept`. Extensionless URLs are the recommendation.
+
+**Conditional requests** use the `ETag` from a read. `If-Match` on a `PUT` makes the write
+fail with `412` when someone else changed the resource in between, and `If-None-Match: *`
+makes it fail with `412` when the resource already exists. One ETag covers every format of a
+resource, so a client that read Turtle can `If-Match` a JSON-LD write. `If-None-Match` on a
+`GET` answers `304` when nothing changed.
+
+Useful errors on a write:
+
+| Status | When |
+|---|---|
+| `400` | the body has content and no `Content-Type`, or the RDF does not parse |
+| `409` | the write would break one of the rules below, the message says which |
+| `412` | an `If-Match` or `If-None-Match` precondition failed |
+| `414` | the URL is too long to store a blob under |
+| `415` | the `Content-Type` is malformed, or names an RDF version the store does not hold |
+
+## Formats in and out
+
+<Status label="Prototype" checked="2026-09-22">A client that ignores `Link` headers reads a Turtle answer for a resource with named graphs as the whole resource, and nothing in the body tells it otherwise.</Status>
+
+Five RDF formats are accepted on a write and served on a read:
+
+| Media type | Carries named graphs |
+|---|---|
+| `text/turtle` | no |
+| `application/n-triples` | no |
+| `application/ld+json` | yes |
+| `application/trig` | yes |
+| `application/n-quads` | yes |
+
+A resource's `Accept-Put` header lists them. On a read the pod picks the highest-ranked
+entry of your `Accept` header it can serve, honouring `q` values. `*/*` and a missing `Accept`
+get the format the resource was written in. An `Accept` that names nothing the pod serves
+gets `406`. Every negotiated response carries `Vary: Accept`.
+
+RDF 1.2 is accepted when the media type declares it, as in
+`text/turtle;version=1.2`. A media type without the parameter means RDF 1.1.
+[ADR-6](decisions.md#adr-6) explains the default.
+
+### Resources that hold named graphs
+
+A resource can hold a dataset: a default graph plus named graphs. You write one in a format
+that carries named graphs, such as a JSON-LD body with nested `@graph` entries or TriG. This
+exists for Verifiable Credentials, which keep each proof in its own named graph and sign the
+whole dataset; flattening the proof into the default graph makes the signature
+unverifiable. [ADR-13](decisions.md#adr-13) has the reasoning.
+
+Reading such a resource as Turtle or N-Triples answers `200` with the default graph alone,
+and the response says in `Link` headers what it left out:
+
+```
+Link: <http://localhost:3000/vc>; rel="https://w3id.org/quadpod/ns#partialDataset"
+Link: <urn:example:g1>; rel="https://w3id.org/quadpod/ns#containsGraph"
+Link: <http://localhost:3000/vc>; rel="alternate"; type="application/trig"
+Link: <http://localhost:3000/vc>; rel="alternate"; type="application/ld+json"
+```
+
+`partialDataset` appears on every answer that left something out. `containsGraph` names one
+withheld graph per header, and only a graph with an IRI: a graph you named with a blank node,
+which is how a credential's proof graph is named, gets no `containsGraph` line. Check for
+`partialDataset`, then fetch one of the `alternate` formats. The terms are listed under
+[`quadpod:` vocabulary](/quadpod/docs/reference/vocabulary/), and the header contract in
+[The vocabulary this pod mints](uri-space.md#the-vocabulary-this-pod-mints).
+
+When the `Accept` header lists a dataset format beside a graph format, the pod serves the
+dataset format and nothing is lost.
+
+A `PUT` in Turtle or N-Triples over a resource that holds named graphs is refused with `409`.
+The message names the graphs the write would have destroyed. Write it as TriG or JSON-LD, or
+`DELETE` it first. This keeps a client that read Turtle, edited it and wrote it back from
+deleting the graphs it never saw.
+
+Only a plain resource holds named graphs. A container or an ACL body with named graphs is a
+`400`.
+
+## Containers
+
+<Status label="Prototype" checked="2026-09-22">A `POST` to a container that does not exist creates it and answers `201` where the conformance suite expects `404`, and a `POST` to a URL without a trailing slash answers `409` where the suite expects `404` or `405`.</Status>
+
+A URL that ends in `/` is a container, and any other URL is a resource. The root `/` is
+always a container. A container's representation lists its members with `ldp:contains`, and
+a read of it carries `Link` headers with `rel="type"` naming `ldp:BasicContainer` and `ldp:Container`.
+
+```sh
+curl http://localhost:3000/notes/ \
+  -H "Authorization: DPoP $TOKEN" -H "DPoP: $PROOF" \
+  -H 'Accept: text/turtle'
+```
+
+**Containment is the server's.** The pod adds a member when a resource is created inside a
+container and removes it on `DELETE`. A write that sets `ldp:contains`, by `PUT` or `PATCH`
+on the container, is refused with `409`. Everything else in a container's graph is yours to
+write.
+
+**`/box` and `/box/` cannot both exist.** While `/box/` exists, `PUT /box` answers `409`, and
+the reverse. The same holds for a container a write would create along the way: `PUT /a/b`
+is refused while a resource `/a` exists. The name that does not exist answers `404`, with no
+redirect. [The URI space reference](uri-space.md#box-and-box-are-two-names-and-only-one-of-them-may-exist)
+has the full rule.
+
+### Create with POST
+
+`POST` to a container creates a new member and lets the server choose its name. The name is
+in the `Location` header of the `201`.
+
+```sh
+curl -i -X POST http://localhost:3000/notes/ \
+  -H "Authorization: DPoP $TOKEN" -H "DPoP: $PROOF" \
+  -H 'Content-Type: text/turtle' \
+  -H 'Slug: shopping' \
+  --data '<#it> <http://schema.org/name> "Shopping list" .'
+```
+
+`Slug` is a hint. The pod keeps the characters `A-Z`, `a-z`, `0-9`, `.`, `_` and `-` and drops
+the rest. When the name is taken, including by its slash counterpart, the pod appends a
+random suffix (`shopping-<uuid>`). With no `Slug`, or none that survives, the name is a random
+UUID. A `Slug` can never create an ACL or a name under `/.well-known/`.
+
+To create a container, add a type link. The new URL then ends in `/`:
+
+```sh
+curl -i -X POST http://localhost:3000/notes/ \
+  -H "Authorization: DPoP $TOKEN" -H "DPoP: $PROOF" \
+  -H 'Content-Type: text/turtle' \
+  -H 'Slug: archive' \
+  -H 'Link: <http://www.w3.org/ns/ldp#BasicContainer>; rel="type"'
+```
+
+A `POST` needs `acl:Append` on the container, and nothing on the new member. An append-only
+inbox works this way. A `PUT` to a new URL needs write access on the new resource as well,
+because the client names it.
+
+## Change part of a document with PATCH
+
+<Status label="Prototype" checked="2026-09-22">A client that sends `application/sparql-update` gets `415`, which is the one `PATCH` scenario of the conformance suite that fails.</Status>
+
+`PATCH` takes an [N3 Patch](https://solidproject.org/TR/protocol#n3-patch) document, with
+`Content-Type: text/n3`, and nothing else. The `Accept-Patch` header says so on every read.
+
+```sh
+curl -X PATCH http://localhost:3000/profile \
+  -H "Authorization: DPoP $TOKEN" -H "DPoP: $PROOF" \
+  -H 'Content-Type: text/n3' \
+  --data '@prefix solid: <http://www.w3.org/ns/solid/terms#> .
+@prefix ex: <http://example.org/> .
+_:patch a solid:InsertDeletePatch ;
+  solid:where   { ?p ex:email "old" . } ;
+  solid:deletes { ?p ex:email "old" . } ;
+  solid:inserts { ?p ex:email "new" . } .'
+```
+
+The pod applies the patch and answers `204`. It answers `409`, and changes nothing, when the
+`solid:where` block matches no binding or more than one, or when a triple in
+`solid:deletes` is not there. The message names the patterns it could not satisfy.
+
+- **Access follows the patch.** Inserting alone needs `acl:Append`. `solid:where` needs
+  `acl:Read`, and deleting needs `acl:Read` and `acl:Write`.
+- **A patch can create.** On a URL that does not exist, a patch with only `solid:inserts`
+  creates the resource and answers `201`.
+- **A patch reaches the default graph only.** N3 Patch cannot name a graph, so a resource's
+  named graphs are out of its reach.
+- **A patch is RDF 1.1.** RDF 1.2 terms in a patch are a `400`.
+- **Blobs and shapes.** A patch at a blob is a `409`, and the bytes stay as they were. A
+  container that binds a SHACL shape refuses every patch into it with `409`; write there with `PUT`.
+
+`application/sparql-update` is a `415`. Accepting it would mean running a client-written
+database command against the store that holds every resource and every ACL, and the Solid
+Protocol does not ask for it. [ADR-8](decisions.md#adr-8) has the reasoning. rdflib.js
+clients still work: its `UpdateManager` reads `Accept-Patch` and uses N3 Patch when that is
+all a server offers. Expect trouble with blank-node inserts on that path.
+
+## Store files
+
+<Status label="Prototype" checked="2026-09-22">When a file's bytes go missing from the blob store behind the pod's back, a `GET` answers `404` with a `Warning` header while the container still lists the file.</Status>
+
+A body whose `Content-Type` is none of the five RDF formats is stored as bytes, whole and
+unchanged: an image, a PDF, a Markdown file. The pod calls such a resource a blob.
+
+```sh
+curl -X PUT http://localhost:3000/photos/cat.jpg \
+  -H "Authorization: DPoP $TOKEN" -H "DPoP: $PROOF" \
+  -H 'Content-Type: image/jpeg' \
+  --data-binary @cat.jpg
+```
+
+`POST` works the same way into a container. A blob answers a `GET` with the bytes it was
+given and the media type it was given, and access control governs it the same way it
+governs a document.
+
+- **One representation.** `Accept` decides only whether the stored type is acceptable. A
+  `GET` of a JPEG with `Accept: text/turtle` is a `406`.
+- **The pod never converts on read.** A Markdown file stored as `text/markdown` has no
+  Turtle form, even though the pod parses Turtle. Triples come from a write that sends RDF.
+  [ADR-14](decisions.md#adr-14) has the reasoning.
+- **Strong ETags.** A blob's ETag is the SHA-256 of its bytes, and conditional requests work
+  as they do for documents.
+- **Size.** A request body is capped at 64 MiB by default, set with `--max-body-bytes`
+  ([configuration](reference/configuration.md)).
+- **Blobs are resources.** A container body and an ACL body must be RDF. A non-RDF body on a
+  container is a `400`, on an ACL a `415`.
+
+The pod records a blob's media type in its own bookkeeping graph, which no URL reaches. A
+client reads it from `Content-Type`, and there is no request that changes it apart from
+writing the blob again. [Server-asserted facts](uri-space.md#server-asserted-facts-are-not-auxiliary-resources)
+describes that split.
+
+### Describing a file
+
+<Status label="Note" checked="2026-09-22">A description resource at `/.aux/{subject}.meta` is a reserved candidate in [the URI space reference](uri-space.md#auxiliary-resources) with no code behind it, and the shape may change entirely.</Status>
+
+Until it exists, describe a file in an ordinary RDF resource of your own and point at the
+file's URL from there.
+
+## Delete
+
+<Status label="Prototype" checked="2026-09-22">Deleting a container that the caller may write only through an ancestor's `acl:default` succeeds with `204`, where the conformance suite expects `403`.</Status>
+
+```sh
+curl -X DELETE http://localhost:3000/notes/first \
+  -H "Authorization: DPoP $TOKEN" -H "DPoP: $PROOF"
+```
+
+| Status | When |
+|---|---|
+| `204` | deleted |
+| `404` | nothing is there |
+| `405` | the root container, which cannot be deleted |
+| `409` | a container that still has members |
+
+A `DELETE` needs `acl:Write` on the resource and on its container, since it changes the
+container's membership. A resource's ACL goes with it, so deleting a resource that has an ACL
+also needs `acl:Control` on it. A later resource at the same URL starts without that ACL and
+inherits its container's policy.
+
+## Auxiliary resources
+
+<Status label="Prototype" checked="2026-09-22">A client that writes an ACL at `/foo.acl` instead of following `Link: rel="acl"` gets a `201` and an ordinary resource that grants nothing.</Status>
+
+An auxiliary resource holds information about another resource. The only kind the pod
+implements is the access control list. Its URL is announced in a `Link` header with
+`rel="acl"` on reads, on the `404` for a resource that does not exist yet, on denials and on
+the `201` of a create. Read the header and never build the URL yourself: the ACL for `/foo`
+lives at `/.aux/foo.acl`, where most other Solid servers put it at `/foo.acl`.
+
+An ACL is written with `PUT` or `PATCH` like any RDF document, needs `acl:Control` on its
+subject, exists only while its subject exists, and never appears in a container listing.
+[Access control](/quadpod/docs/access/) covers what goes inside one, and
+[the URI space reference](uri-space.md#auxiliary-resources) covers the paths and the rules in
+full.

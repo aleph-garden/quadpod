@@ -1,0 +1,141 @@
+---
+title: Query across the pod
+description: Why every resource is a named graph in one quad store, what that gives the pod today, and what a client query interface will look like.
+---
+
+import Status from '@components/Status.astro'
+
+A named graph is a set of RDF statements with a name of its own. quadpod stores
+every resource as one: `PUT /notes/today` with a Turtle body puts the body's
+statements into the graph named `https://pod.example/notes/today`. All of those
+graphs sit in one [Oxigraph](https://github.com/oxigraph/oxigraph) quad store, so
+the whole pod is one dataset. SPARQL is the query language for RDF, and a SPARQL
+query can name several graphs at once or range over all of them. A question that
+spans resources is therefore one query against one store.
+
+<Status label="Specified" checked="2026-09-22">A client cannot send a query to the pod today: no HTTP route accepts one, and [ADR-12](decisions.md#adr-12) defines the read-only interface that will.</Status>
+
+Today the pod runs such queries for its own work, and a client reads the pod one
+resource at a time with `GET`. The sections below separate the two.
+
+## One store, one dataset
+
+<Status label="Prototype" checked="2026-09-22">Every resource you write lands in the one store, and the tests cover that store in memory plus one RocksDB reopen, so a long-running RocksDB deployment is the first place to expect surprises.</Status>
+
+Each resource owns up to three graphs in the store:
+
+| Graph | Holds | A client can reach it |
+|---|---|---|
+| the resource's URL | your statements; for a container also the `ldp:contains` list the server keeps | yes, with `GET` |
+| the ACL's URL, `/.aux/<path>.acl` | the access rules for the resource | yes, as its own resource |
+| `urn:quadpod:sys:` plus the resource's URL | server bookkeeping: content type, ETag, blob key, timestamps, whether the resource exists | never |
+
+A resource that holds a dataset, for example a JSON-LD document with `@graph`
+entries or a Verifiable Credential with its proof in a separate graph, keeps each
+of its named graphs in a further store graph whose name the server derives from
+the resource's URL and the graph's own name. Two resources that both contain a
+graph called `urn:example:g1` therefore never share one.
+[ADR-13](decisions.md#adr-13) explains why a resource may hold a dataset.
+
+Bytes that are not RDF, such as images and PDFs, are stored whole in a separate
+blob store. The dataset describes them in the bookkeeping graph and holds none of
+their content, so a query over the dataset sees that a PDF exists and cannot see
+what it says.
+
+The store runs inside the pod's process. Pass `--rdf-store rocksdb:<dir>` for
+storage that survives a restart; the default, `memory`, loses everything when
+the process stops. Only one process may open a store directory at a time
+([ADR-7](decisions.md#adr-7)), which means nothing else can read the directory
+while the pod runs.
+
+## Access control is data in the same dataset
+
+<Status label="Prototype" checked="2026-09-22">The pod finds the governing ACL with one query across graphs on every request, and the conformance suite that exercises this runs against the in-memory store only.</Status>
+
+An ACL is a resource like any other, so its rules are statements in a named graph
+in the same store as the data they protect. To decide a request for
+`/notes/today`, the pod needs the ACL of the resource itself and of every
+container above it, because the nearest ACL that exists wins. It collects the
+ones that exist and fetches their rules in a single query:
+
+```sparql
+SELECT ?g ?s ?p ?o WHERE {
+  VALUES ?g {
+    <https://pod.example/.aux/notes/today.acl>
+    <https://pod.example/.aux/notes/.acl>
+    <https://pod.example/.aux/.acl>
+  }
+  GRAPH ?g { ?s ?p ?o }
+}
+```
+
+This is the query the pod builds in its policy lookup, with the ACL URLs filled
+in for the request at hand. A server that keeps resources as files walks the
+directory tree for the same answer. [Control access](/quadpod/docs/access/)
+describes what the rules mean once they are loaded.
+
+## What a client can do today
+
+<Status label="Specified" checked="2026-09-22">To answer a question across resources, fetch each resource with `GET` and combine them in your client, because the query interface in [ADR-12](decisions.md#adr-12) has no code yet.</Status>
+
+The pod exposes the store only through the Linked Data Platform, the HTTP
+interface of `GET`, `PUT`, `POST`, `PATCH` and `DELETE` on resources. There is no
+SPARQL endpoint, and the only query parameter the pod reads is `?validate`. A
+`PATCH` body in `application/sparql-update` is refused; the pod accepts N3 Patch
+only ([ADR-8](decisions.md#adr-8)).
+
+A client that wants a view over many resources lists a container with `GET` on
+its URL, follows the `ldp:contains` links, and reads each member.
+[Write and read data](/quadpod/docs/data/) covers those requests.
+
+## The query interface
+
+<Status label="Specified" checked="2026-09-22">When the interface ships it will answer queries and refuse every write, so plan for writes to keep going through `PUT`, `POST` and `PATCH`; the contract is [ADR-12](decisions.md#adr-12).</Status>
+
+[ADR-12](decisions.md#adr-12) fixes the rules for any query interface over the
+store:
+
+- It reads and never writes. No `application/sparql-update` and no update
+  operation is reachable through it. Writes go through the Linked Data Platform,
+  where access control, shape validation and the server's bookkeeping apply.
+- It names graphs its own way, and every graph name it shows leads back to the
+  URL of the resource that holds the graph. A client holding a graph name from a
+  query result can find the resource to write to.
+- It renames graphs and nothing else. A graph name that also appears as a
+  subject or object in the data keeps its original form there, so the two stop
+  matching inside the query interface.
+- It may leave out the bookkeeping graphs.
+
+## Who may see what in a query
+
+<Status label="Note" checked="2026-09-22">No document defines how a query will respect access rules yet. The question is listed as open in the [roadmap](https://github.com/aleph-garden/quadpod#roadmap), and the shape may change entirely.</Status>
+
+Today one place in the pod enforces access: each request names one resource, and
+the pod checks that resource's ACL. A query that reads across graphs reaches many
+resources at once, each with its own ACL, so it needs a second place that
+enforces access. How that place decides, per graph or otherwise, is undecided.
+
+## Queries over the contents of files
+
+<Status label="Specified" checked="2026-09-22">Text inside a PDF or image stays out of the dataset until an extractor exists, and [ADR-10](decisions.md#adr-10) defines how one will run.</Status>
+
+A blob holds bytes, and the pod never turns bytes into statements on a read
+([ADR-14](decisions.md#adr-14)). Extraction is the designed way to make a file's
+contents queryable: a separate process learns about a new file through a change
+notification, reads its bytes, for example runs OCR over a scan, and writes what
+it found as statements into the file's `.meta` auxiliary resource. Those
+statements are then part of the dataset like any other. The write that stored
+the file never waits for this and never fails because of it.
+
+Extraction depends on notifications, and the pod serves no notification channel
+yet.
+
+## Replicas
+
+<Status label="Specified" checked="2026-09-22">A pod runs as one process over one store today, and [ADR-11](decisions.md#adr-11) defines how several replicas would answer for one URL.</Status>
+
+Replicas of one pod will answer under the same base URL, so a graph name means
+the same resource on every replica. A replica may carry a subtree's content, only
+the knowledge that it exists, or neither. For a URL it holds, a replica answers
+with the resource; for one it knows exists elsewhere, `421 Misdirected Request`;
+for one it may not know about, `404`.

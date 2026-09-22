@@ -1,0 +1,89 @@
+---
+title: quadpod
+description: A Solid pod in one Rust binary that keeps every resource as a named graph in one quad store.
+---
+
+import Status from '@components/Status.astro'
+
+quadpod is a personal data server. Applications store your data on it over
+HTTP: `PUT` a document, `GET` it back. Who may read what is yours to decide.
+It implements [Solid](https://solidproject.org/), an open specification for
+exactly that: your data lives in one place you control, and applications come
+to it instead of keeping their own copy.
+
+<Status label="Buildable" checked="2026-09-22">The README's commands build the pod from a clean checkout, and there is no released binary or container image to install instead.</Status>
+
+It is a single Rust binary with [Oxigraph](https://github.com/oxigraph/oxigraph)
+embedded, an RDF quad store, over RocksDB. RDF is the data model Solid uses:
+statements of subject, predicate and object, grouped into named graphs.
+
+What sets quadpod apart is where it stores a resource. Most Solid servers keep
+resources as files in a directory tree. quadpod keeps every resource as a named
+graph inside one quad store, so the whole pod is a single dataset and a question
+that spans resources is one query against it. The access control rules live in
+the same dataset. Bytes that are not RDF, such as images and PDFs, live beside
+the graphs in a blob store and are described by triples the server owns.
+
+## Who it is for
+
+Two readers, in this order.
+
+**You want to run a pod.** quadpod verifies credentials and issues none, so you
+need a Solid-OIDC identity provider you already run, and you point the pod at it.
+[Run a pod](/quadpod/docs/run/) covers the build, the identity provider, the
+flags and the stores.
+
+**You are writing an application against a pod.** quadpod speaks the Solid
+Protocol over HTTP. Two habits of this pod matter to a client from the first
+request: a URL suffix such as `.ttl` is part of the resource's name and says nothing
+about its format, and an ACL lives at the URL the `Link: rel="acl"` header names, never beside the resource.
+The [URI space](uri-space.md) is the contract for what a client may address.
+
+## What works today
+
+<Status label="Prototype" checked="2026-09-22">14 of 652 conformance scenarios still fail, and the suite runs on an in-memory store, so the RocksDB store a deployment uses is covered only by the pod's own tests.</Status>
+
+The official Solid conformance suite, over the `protocol` and `web-access-control`
+manifests, passes 638 of 652 scenarios in its latest recorded run (2026-08-08).
+Every run is dated and each failure is triaged in the
+[conformance findings](conformance-findings.md). Implemented and covered by that
+suite and the pod's own tests:
+
+- Linked Data Platform over HTTP: containers, resources, and containment the
+  server maintains.
+- Web Access Control, where the nearest ACL wins and never merges with its
+  ancestors.
+- Solid-OIDC authentication with DPoP-bound tokens. A plain `Bearer` token is refused.
+- Turtle and JSON-LD in both directions, N3 Patch for `PATCH`, and conditional
+  requests on ETags.
+
+## What does not exist yet
+
+No endpoint issues a token, so no browser application can log in to the pod
+directly. No SPARQL endpoint exposes the store, no notification channel is served,
+and one pod holds one storage space. The full list is under
+[Limits](architecture.md#limits) in the architecture document.
+
+## The guide
+
+- [Run a pod](/quadpod/docs/run/): build it, connect an identity provider, pick
+  the stores, and put it behind a reverse proxy.
+- [Write and read data](/quadpod/docs/data/): `PUT` and `GET`, content
+  negotiation, containers, and blobs.
+- [Control access](/quadpod/docs/access/): Web Access Control, and what "the
+  nearest ACL wins" means when you write an ACL.
+- [Query across the pod](/quadpod/docs/query/): why every resource is a named
+  graph in one store, and what a query across resources needs.
+
+**Reference** holds the contracts: the [URI space](uri-space.md), the
+[vocabulary](reference/vocabulary.mdx) the pod defines, every
+[configuration](reference/configuration.md) flag with its environment variable,
+and the [API documentation](/quadpod/docs/reference/api/quadpod/) of the Rust library.
+
+**Internals** holds the reasoning, written for maintainers: the
+[architecture](architecture.md), the [decisions](decisions.md), the
+[constraints](constraints.md) each checked by a command, and the
+[conformance findings](conformance-findings.md).
+
+The source is at [github.com/aleph-garden/quadpod](https://github.com/aleph-garden/quadpod),
+MIT licensed. quadpod is one component of [Aleph Garden](https://aleph.garden).

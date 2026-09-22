@@ -1,0 +1,321 @@
+---
+title: Run a pod
+description: Build quadpod, point it at an identity provider, choose where the data lives, and put it behind a reverse proxy.
+---
+
+import Status from '@components/Status.astro'
+
+<Status label="Prototype" checked="2026-09-22">Every run on record is the conformance suite on loopback with an in-memory store, so a deployment behind a reverse proxy with data on disk is the first setup you would be checking yourself.</Status>
+
+quadpod is one binary. It listens on plain HTTP on a local address, keeps its RDF in an
+embedded [Oxigraph](https://github.com/oxigraph/oxigraph) store and its other files in a blob
+store, and expects a reverse proxy in front of it for TLS. It verifies Solid-OIDC credentials
+that some identity provider issued, and it needs to be told which one.
+
+There is no released binary and no container image. You build it from the repository.
+
+## Build
+
+<Status label="Buildable" checked="2026-09-22">`nix develop -c cargo build --release` from a fresh clone produces the binary.</Status>
+
+The build needs the Nix dev shell. Oxigraph needs bindgen and libclang at build time, and
+only the flake provides them, so a bare `cargo build` fails.
+
+```sh
+git clone https://github.com/aleph-garden/quadpod
+cd quadpod
+nix develop -c cargo build --release
+```
+
+The binary lands at `target/release/quadpod`. `quadpod --version` prints the version from the
+crate manifest, which is what to quote in a bug report.
+
+## The identity provider
+
+<Status label="Prototype" checked="2026-09-22">The conformance run is the only place credentials have been verified end to end, against a Community Solid Server on loopback, so a production identity provider is untested.</Status>
+
+To write anything, a client presents an access token and a DPoP proof. DPoP (Demonstration of
+Proof-of-Possession, RFC 9449) binds the token to a key the client holds. The pod checks both,
+fetches the issuer's keys, and checks that the WebID profile the token names lists that issuer
+as its `solid:oidcIssuer`. It refuses a plain `Bearer` token, so an identity provider that
+hands out tokens without DPoP will not work against it.
+
+The pod does not hand out tokens to clients. Point it at a Solid-OIDC identity provider you
+already run with `--trusted-issuer`. The flag is repeatable. Without it the pod trusts every
+issuer that a WebID profile vouches for, which is open federation: any issuer on the internet
+gets as far as the pod fetching its keys.
+
+The shortest path to a working setup is [`conformance/run.sh`](../conformance/run.sh). It
+starts a Community Solid Server in Docker on port 3001 as the identity provider, registers two
+users there, and starts the pod pointed at it. `KEEP_RUNNING=1` leaves both up afterwards so
+you can send requests by hand. The [conformance harness README](../conformance/README.md) has
+the details.
+
+### The pod as its own issuer
+
+<Status label="Prototype" checked="2026-09-22">Turning it on publishes keys and a discovery document and offers no login or token endpoint, so no client can obtain a token from the pod yet.</Status>
+
+`--op-signing-keys <file>` turns on the OP, the OpenID Provider part of the pod
+([ADR-9](decisions.md#adr-9-the-pod-issues-the-credentials-it-verifies)). With it set, the
+pod:
+
+- loads a private key set from the file, or generates one there if the file is missing, and
+  never rewrites an existing file;
+- serves the public keys at `/.well-known/jwks.json`;
+- serves an OIDC discovery document at `/.well-known/openid-configuration` that names the pod
+  as `issuer`.
+
+The code that signs access tokens exists and no HTTP route reaches it. The discovery document
+lists no `authorization_endpoint` and no `token_endpoint`, because nothing would answer them.
+Until those land ([issue #58](https://github.com/aleph-garden/quadpod/issues/58)), a pod with
+the OP on still needs an external identity provider for every client that logs in.
+
+Two requirements apply when the OP is on. `--base-uri` has to be an origin root such as
+`https://pod.example/`, because the discovery document hangs off `/.well-known/`; a base URI
+with a path refuses the start. And the pod has to reach its own public name over https, which
+[outbound fetches](#outbound-fetches) explains.
+
+## Start the pod
+
+```sh
+quadpod \
+  --base-uri https://pod.example/ \
+  --owner-webid https://you.example/profile/card#me \
+  --trusted-issuer https://idp.example/ \
+  --rdf-store rocksdb:/var/lib/quadpod/store \
+  --blob-store local:/var/lib/quadpod/blobs
+```
+
+What each flag does:
+
+- **`--base-uri`** is the public URL of the pod, absolute and ending in a slash. Every URL
+  the pod mints derives from it, and a DPoP proof's `htu` is compared against it byte for
+  byte. The default is `http://localhost:3000/`.
+- **`--owner-webid`** is required. On first start the pod writes a root ACL that grants this
+  WebID full control. On later starts it leaves the root ACL as it finds it.
+- **`--trusted-issuer`** names the identity provider, as above.
+- **`--rdf-store`** and **`--blob-store`** say where the data lives. Both default to `memory`,
+  so a pod started without them loses everything on restart.
+- **`--listen`** is the address to bind, `127.0.0.1:3000` by default.
+
+`--reset-root-acl` overwrites the root ACL with the owner's grant on startup. It is the way
+back from a root ACL that grants nobody control, and it discards any change made to the root
+ACL over HTTP, so use it for one restart and then drop it.
+
+Every flag has an environment variable (`POD_BASE_URI`, `POD_OWNER_WEBID`, and so on). The
+[configuration reference](/quadpod/docs/reference/configuration/) lists them all with their
+defaults.
+
+A value the pod cannot use refuses the start with a message naming the flag: an unknown store
+spec, a directory it cannot open, a malformed `--allow-insecure-host` entry, a key file it
+cannot read.
+
+## Where the data lives
+
+Two stores hold one dataset. The triple store holds every RDF resource as a named graph,
+along with the ACLs and the server's own bookkeeping. The blob store holds the bytes of every
+resource that is not RDF, such as images and PDFs, and the triples record where each blob
+belongs.
+
+```
+--rdf-store memory            (default) triples in this process, gone on restart
+--rdf-store rocksdb:<dir>     triples in <dir>
+--blob-store memory           (default) non-RDF bytes in this process, gone on restart
+--blob-store local:<dir>      non-RDF bytes mirroring the URL tree under <dir>
+```
+
+The defaults match on purpose: an unconfigured pod forgets its triples and its blobs together,
+so a blob never outlives the triples that describe it.
+
+### The triple store on disk
+
+<Status label="Prototype" checked="2026-09-22">A unit test reopens a `rocksdb:` store and finds its data, and the conformance suite runs in memory, so no full request path has been exercised against a store on disk.</Status>
+
+`rocksdb:<dir>` keeps the triples in an Oxigraph RocksDB directory. One process holds that
+directory at a time: Oxigraph takes an exclusive lock, and a second pod aimed at the same path
+refuses to start. Inside the running pod, requests are served in parallel. The consequence is
+that every deployment is a stop followed by a start, with no rolling restart and no second
+replica ([ADR-7](decisions.md#adr-7-embedded-oxigraph-one-process-per-store-directory)).
+
+### The blob store on disk
+
+<Status label="Prototype" checked="2026-09-22">A unit test writes a blob under a `local:` directory and finds the file at its URL path, and the conformance suite runs in memory, so blobs on disk have not been served over HTTP in a recorded run.</Status>
+
+`local:<dir>` writes each blob to a file under `<dir>` at the path of its URL, so you can read
+and back up the files with ordinary tools.
+
+### Backups
+
+Back up the store directory and the blob directory together, from the same moment. A store
+restored without its blobs describes bytes that are not there.
+
+With the OP on, the file named by `--op-signing-keys` is a third thing to back up. It holds
+private key material and nothing else can recreate it. If it is lost, the pod generates a new
+key at the next start, and every token signed with the old one stops verifying. Keep it apart
+from the store backups, with tighter access, the way you would keep a TLS private key.
+
+## Behind a reverse proxy
+
+<Status label="Prototype" checked="2026-09-22">No reverse-proxy setup is on record, and a `--base-uri` that differs from the URL clients type refuses every authenticated request.</Status>
+
+The pod speaks plain HTTP and has no TLS of its own. Bind it to loopback, the default, and
+let a reverse proxy terminate TLS and forward to it.
+
+Set `--base-uri` to the public URL the client uses, such as `https://pod.example/`. The
+internal address the proxy forwards to is the wrong value. A DPoP proof carries the URL the
+client requested, and the pod compares it to `--base-uri`, so with the internal address set
+no proof matches and every authenticated request is refused.
+
+`--max-body-bytes` caps request bodies, 64 MiB by default. The pod buffers a whole body in
+memory, so that memory is the ceiling. Set the proxy's own body limit at least as high, or
+the proxy refuses large uploads before the pod sees them.
+
+### Health checks and shutdown
+
+`GET /.well-known/health` answers `200` with `{"status":"pass"}` as
+`application/health+json`. It needs no credential and is served with or without the OP. It
+reports that the process is up and serving, and it touches neither store, so a pod whose
+store has failed still answers it. Alert on failing requests to catch a store problem.
+
+`SIGTERM` and `SIGINT` drain: the pod stops accepting connections and finishes the requests
+already in flight before it exits. Give your supervisor a stop timeout longer than your
+slowest request. systemd's `TimeoutStopSec` defaults to 90 seconds and Kubernetes'
+`terminationGracePeriodSeconds` to 30. When the timeout runs out the supervisor sends
+`SIGKILL`, and a client whose write was in flight learns the outcome only by having its
+connection dropped.
+
+## Outbound fetches
+
+<Status label="Prototype" checked="2026-09-22">The conformance run reaches its identity provider through an `--allow-insecure-host` entry, so the default https path to a public identity provider is covered by unit tests and no recorded run.</Status>
+
+Verifying a token makes the pod fetch three URLs before it knows who is asking, and the token
+supplies all three:
+
+| Fetch | URL comes from |
+|---|---|
+| OIDC discovery | `<iss>/.well-known/openid-configuration`, where `iss` is a claim in the token |
+| JWKS | the `jwks_uri` the discovery document returns |
+| WebID profile | the `webid` claim, with its fragment removed |
+
+Whoever writes the token picks those URLs. A pod that fetched them without limits could be
+steered at any address on its own network, a server-side request forgery (SSRF). By default
+the pod refuses:
+
+- any scheme but https;
+- any host that resolves to loopback, RFC 1918 private space, link-local (`169.254/16`,
+  which covers cloud metadata endpoints), CGNAT (`100.64/10`), or the IPv6 equivalents
+  (`::1`, `fc00::/7`, `fe80::/10`, and IPv4-mapped forms of all of them);
+- redirects, which count as a failure;
+- bodies over 1 MiB, a connect slower than 5 seconds, or a fetch slower than 10 seconds in
+  total.
+
+The address check runs inside the DNS resolver the connection uses, so a name cannot resolve
+to a public address for the check and a private one for the connection.
+
+`--trusted-issuer` narrows this further. With an issuer list set, a token from any other
+issuer is refused before the pod fetches anything.
+
+### The OP needs its own public name
+
+With the OP on, the pod verifies its own tokens exactly as it verifies anyone else's: it
+fetches its own discovery document and keys through the same guarded client. So it has to
+reach its own public name over https at a public address. Three ordinary setups prevent that:
+a reverse proxy on the same host, so the name resolves to loopback; split-horizon DNS that
+answers with the internal address from inside the network; a tailnet address, which is CGNAT.
+In each of them every token the pod issued is rejected as coming from an issuer it cannot
+reach. Naming the pod's own host with `--allow-insecure-host` fixes it, at the cost described
+below.
+
+### `--allow-insecure-host`
+
+```
+--allow-insecure-host <HOST>          repeatable
+POD_ALLOW_INSECURE_HOSTS=<HOST,HOST>  comma-separated
+```
+
+For a host you name, the pod drops the private-address check and the https-only rule. For
+that host, redirects stay refused, the address the connection reaches is still the one that
+was checked, and the body cap and timeouts still hold. Every host you do not name keeps the
+full default. No flag turns the filter off for all hosts.
+
+An entry is `host`, which opens every port on that host, or `host:port`, which opens one
+port. Prefer `host:port`: a bare host opens every port on it.
+
+Matching is on the host as it appears in the URL, before DNS. If the issuer is
+`http://localhost:3001/`, the entry is `localhost:3001`; `127.0.0.1:3001` does not match it
+even though the name resolves there. The pod normalizes an entry the way the URL library
+normalizes a request's host (lowercase, punycode, percent-decoding, canonical IP literals), so
+you can write it the way you would write the URL.
+
+The rules for writing an entry:
+
+- No scheme, path, credentials, query or fragment. `localhost:3001` is an entry;
+  `http://localhost:3001/` is rejected.
+- A URL with no port is compared against its scheme's default port, so `http://css.local/`
+  matches `css.local:80` or `css.local`, and does not match `css.local:3001`.
+- A trailing dot is kept. `http://localhost.:3001/` does not match `localhost:3001`.
+- An IPv6 host without a port is written bare, `fd00::1`. With a port it is bracketed,
+  `[fd00::1]:80`. An unbracketed `fd00::1:80` is ambiguous and refuses the start.
+- Any malformed entry refuses the start and prints the entry.
+
+A non-empty list is logged at `warn` on startup, so the relaxed control shows up in the logs.
+
+What a listed host costs: anyone who can reach the pod with a token they control can make it
+send plain-http `GET` requests to that host and port. They read nothing back, and a service
+that acts on a `GET` still acts. Pairing the entry with `--trusted-issuer` keeps a token from
+an unexpected issuer from reaching the fetch at all.
+
+The intended use is local development against a local identity provider, which is what the
+conformance run does:
+
+```sh
+quadpod \
+  --owner-webid http://localhost:3001/alice/profile/card#me \
+  --trusted-issuer http://localhost:3001/ \
+  --allow-insecure-host localhost:3001
+```
+
+A deployment that reaches a public identity provider over https needs no entry at all.
+
+## The config file
+
+<Status label="Prototype" checked="2026-09-22">Loading, precedence and error reporting are covered by unit tests, and a list entry that contains a comma is split in two with no way to escape it.</Status>
+
+```
+--config <path>
+POD_CONFIG=<path>
+```
+
+The file is TOML, flat, with the flag names in snake case as keys. The pod reads a file only
+when `--config` or `POD_CONFIG` names one; there is no search path. A named file that cannot
+be read, is not valid TOML, or holds a key the binary does not know refuses the start, so a
+typo in a key cannot leave a setting silently unset.
+
+```toml
+base_uri     = "https://pod.example/"
+owner_webid  = "https://you.example/profile/card#me"
+rdf_store    = "rocksdb:/var/lib/quadpod/store"
+blob_store   = "local:/var/lib/quadpod/blobs"
+listen       = "127.0.0.1:3000"
+
+trusted_issuers      = ["https://idp.example/"]
+expected_audience    = "https://pod.example/"
+allow_insecure_hosts = []
+# op_signing_keys    = "/var/lib/quadpod/op-keys.json"  # naming it turns the OP on
+reset_root_acl       = false  # true resets the root ACL on every start
+max_body_bytes       = 67108864
+```
+
+Precedence is flag, then environment variable, then file, then default. A repeatable flag on
+the command line replaces the file's whole list for that key.
+
+Lists are TOML arrays. `trusted_issuers` and `allow_insecure_hosts` are still split on commas
+after they are read, the same as the environment form, so one array entry that contains a
+comma becomes two entries.
+
+An error about a value from the file names the file and the key. Errors about `rdf_store`,
+`blob_store`, `allow_insecure_hosts` and `op_signing_keys` name the flag instead, because the
+pod checks those four after the file is parsed.
+
+Leaving `reset_root_acl = true` in a file resets the root ACL on every start and discards
+every change made to it over HTTP since. Set it for one restart and set it back.

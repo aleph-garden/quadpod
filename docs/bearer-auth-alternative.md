@@ -1,4 +1,6 @@
-# Accepting bearer tokens alongside DPoP
+---
+title: "Accepting bearer tokens alongside DPoP"
+---
 
 Status: wanted, not designed. Recorded so the trade-off is not re-derived later.
 

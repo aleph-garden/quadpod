@@ -1,4 +1,6 @@
-# Constraints
+---
+title: "Constraints"
+---
 
 Rules that must stay true, with the command that decides them. The reasoning
 lives in [`architecture.md`](architecture.md) and [`decisions.md`](decisions.md);

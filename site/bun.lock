@@ -5,6 +5,7 @@
     "": {
       "name": "quadpod-docs",
       "dependencies": {
+        "@aleph-garden/starlight-theme": "file:../../aleph-garden/www/packages/starlight-theme",
         "@astrojs/markdown-remark": "^7.3.1",
         "@astrojs/starlight": "^0.42.1",
         "astro": "^7.3.3",
@@ -20,6 +21,8 @@
     },
   },
   "packages": {
+    "@aleph-garden/starlight-theme": ["@aleph-garden/starlight-theme@file:../../aleph-garden/www/packages/starlight-theme", { "peerDependencies": { "@astrojs/starlight": ">=0.42.0" } }],
+
     "@astrojs/astro2tsx": ["@astrojs/astro2tsx@0.1.1", "", { "dependencies": { "@emnapi/core": "1.11.3", "@napi-rs/wasm-runtime": "1.2.4" } }, "sha512-VNhvoKzs0FXF3iq+2QVIjTqA6awKDKpd2U7khYg3AhcxjM1KMINEma4IeqQnMqJUakw0MNQygntLvLmSPS5pLA=="],
 
     "@astrojs/check": ["@astrojs/check@0.9.10", "", { "dependencies": { "@astrojs/language-server": "^2.16.7", "chokidar": "^4.0.3", "kleur": "^4.1.5", "yargs": "^18.0.0" }, "peerDependencies": { "typescript": "^5.0.0 || ^6.0.0" }, "bin": { "astro-check": "./bin/astro-check.js" } }, "sha512-zgx/UQMozdjOa3bOxjgeCFdtpE3c9rRX6xHwa+2QXvy8z8Akifu2AtubHyv/zzC2znO8dl8fFWL4K+Ba9kS8HQ=="],

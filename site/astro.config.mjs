@@ -1,5 +1,6 @@
 // @ts-check
 import { fileURLToPath } from 'node:url'
+import aleph from '@aleph-garden/starlight-theme'
 import starlight from '@astrojs/starlight'
 import { defineConfig } from 'astro/config'
 import { relativeLinks } from './src/links.mjs'
@@ -23,9 +24,10 @@ export default defineConfig({
       title: 'quadpod',
       description: 'A Solid pod whose storage is one RDF quad store. Part of Aleph Garden.',
       social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/aleph-garden/quadpod' }],
+      plugins: [aleph({ project: 'quadpod' })],
       sidebar: [
         {
-          label: 'quadpod',
+          label: 'Start',
           items: [{ label: 'Overview', link: '/quadpod/docs/' }]
         },
         {

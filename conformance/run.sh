@@ -220,7 +220,7 @@ write_harness_config() {
     doap:name "quadpod"@en ;
     doap:release <${TARGET_IRI}#release> ;
     doap:developer <https://github.com/tophcodes> ;
-    doap:homepage <https://github.com/tophcodes/quadpod> ;
+    doap:homepage <https://github.com/aleph-garden/quadpod> ;
     doap:description "A SPARQL-authoritative, verify-only Solid pod."@en ;
     doap:programming-language "Rust"@en ;
     solid-test:skip "acp" .

@@ -13,7 +13,7 @@
 A term enters this namespace only when the alternative is a claim a server cannot make in any registered vocabulary. Everything quadpod can say in LDP, WAC, SHACL, PROV-O or schema.org is said there instead."""@en ;
     vann:preferredNamespacePrefix "quadpod" ;
     vann:preferredNamespaceUri "https://w3id.org/quadpod/ns#" ;
-    rdfs:seeAlso <https://github.com/tophcodes/quadpod> .
+    rdfs:seeAlso <https://github.com/aleph-garden/quadpod> .
 
 quadpod:containsGraph
     a rdf:Property ;

@@ -1,9 +1,13 @@
 # quadpod
 
-> **Under active development, well before a first release.** This pod verifies credentials
-> and issues none, so nothing can log in to it interactively. Point it at an identity
-> provider you already run. There is no released binary and no container image. Interfaces
-> change without notice. Don't put data in it that you cannot afford to lose.
+> Before 1.0. Any interface here can change in any release, including the
+> ones marked `-dev` patches. Build against it to experiment, depend on an
+> exact version, and expect to follow breaking changes by hand.
+>
+> This pod verifies credentials and issues none, so nothing can log in to it
+> interactively. Point it at an identity provider you already run. There is no
+> released binary and no container image. Don't put data in it that you cannot
+> afford to lose.
 
 quadpod is a personal data server. Applications store your data on it over HTTP: `PUT` a
 document, `GET` it back. Who may read what is yours to decide, and the application does not

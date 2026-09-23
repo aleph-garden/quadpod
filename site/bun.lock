@@ -5,7 +5,7 @@
     "": {
       "name": "quadpod-docs",
       "dependencies": {
-        "@aleph-garden/starlight-theme": "0.1.3-dev",
+        "@aleph-garden/starlight-theme": "0.1.4-dev",
         "@astrojs/markdown-remark": "^7.3.1",
         "@astrojs/starlight": "^0.42.1",
         "astro": "^7.3.3",
@@ -21,9 +21,9 @@
     },
   },
   "packages": {
-    "@aleph-garden/brand": ["@aleph-garden/brand@0.1.1-dev", "", {}, "sha512-MNYVpkCkcjIkJgnsg7TDA/PAHuloo+yD7qXL50utGc17Prw+veg6rPfv0bZfS+fqeFDk0JhqKTXA1iMsvRQyBg=="],
+    "@aleph-garden/brand": ["@aleph-garden/brand@0.1.2-dev", "", {}, "sha512-wADTk9BepkHA9n9v6vgJR4hm4t24HEqzVvsTCcyE3AXj4v2EnwyPklZWOcHQGd1tNuwNTzSe+C4udV/FHH2SJQ=="],
 
-    "@aleph-garden/starlight-theme": ["@aleph-garden/starlight-theme@0.1.3-dev", "", { "dependencies": { "@aleph-garden/brand": "0.1.1-dev" }, "peerDependencies": { "@astrojs/starlight": ">=0.42.0" } }, "sha512-6i6XQuiIuxB7Z3n8vFGfV8DpMEqI6EzK9DUJ3rm1DaFm8QrQ8vXxDt+Rvkbxn6ZNVpSfwL4yi8PXj7mZMcgOJQ=="],
+    "@aleph-garden/starlight-theme": ["@aleph-garden/starlight-theme@0.1.4-dev", "", { "dependencies": { "@aleph-garden/brand": "0.1.2-dev" }, "peerDependencies": { "@astrojs/starlight": ">=0.42.0" } }, "sha512-RLmhVRP+f0e3SpMM/xldHqyDt7knOOqQ8eqh8Z3OJynPUXESpCMxW2guZljLlhFQ7BO/HGiHq0N5iOvi2uN6JA=="],
 
     "@astrojs/astro2tsx": ["@astrojs/astro2tsx@0.1.1", "", { "dependencies": { "@emnapi/core": "1.11.3", "@napi-rs/wasm-runtime": "1.2.4" } }, "sha512-VNhvoKzs0FXF3iq+2QVIjTqA6awKDKpd2U7khYg3AhcxjM1KMINEma4IeqQnMqJUakw0MNQygntLvLmSPS5pLA=="],
 

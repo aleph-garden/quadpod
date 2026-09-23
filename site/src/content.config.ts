@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs'
 import { defineCollection } from 'astro:content'
 import { docsSchema } from '@astrojs/starlight/schema'
 import { glob } from 'astro/loaders'
-import { MOUNT, PAGES } from './pages.mjs'
+import { PAGES } from './pages.mjs'
 
 // The documents live in the repository's docs/, next to the code they
 // describe, and the site addresses them rather than holding copies.
@@ -21,7 +21,7 @@ export const collections = {
     loader: glob({
       base: DOCS,
       pattern: Object.keys(PAGES),
-      generateId: ({ entry }) => [MOUNT, PAGES[entry as keyof typeof PAGES]].filter(Boolean).join('/')
+      generateId: ({ entry }) => PAGES[entry as keyof typeof PAGES] || 'index'
     }),
     schema: docsSchema()
   })

@@ -5,7 +5,7 @@
     "": {
       "name": "quadpod-docs",
       "dependencies": {
-        "@aleph-garden/starlight-theme": "0.1.0-dev",
+        "@aleph-garden/starlight-theme": "0.1.1-dev",
         "@astrojs/markdown-remark": "^7.3.1",
         "@astrojs/starlight": "^0.42.1",
         "astro": "^7.3.3",
@@ -23,7 +23,7 @@
   "packages": {
     "@aleph-garden/brand": ["@aleph-garden/brand@0.1.1-dev", "", {}, "sha512-MNYVpkCkcjIkJgnsg7TDA/PAHuloo+yD7qXL50utGc17Prw+veg6rPfv0bZfS+fqeFDk0JhqKTXA1iMsvRQyBg=="],
 
-    "@aleph-garden/starlight-theme": ["@aleph-garden/starlight-theme@0.1.0-dev", "", { "dependencies": { "@aleph-garden/brand": "0.1.1-dev" }, "peerDependencies": { "@astrojs/starlight": ">=0.42.0" } }, "sha512-UPN/wVUTquJUBK4vzbnuBJ2ryKP7iZuc27PiYMBLy1kmOtxBbmcgyKJ3m4AbNYJlZ1CGScq8pq41OOla9Novuw=="],
+    "@aleph-garden/starlight-theme": ["@aleph-garden/starlight-theme@0.1.1-dev", "", { "dependencies": { "@aleph-garden/brand": "0.1.1-dev" }, "peerDependencies": { "@astrojs/starlight": ">=0.42.0" } }, "sha512-CZkg6WHaf5U6xWHFIHqzScZe1Pod4U5Who84HxfaPP81+UgIxbMao2JXbpP2RTGi/4aVqgLY8xUkfh7xyAmj+A=="],
 
     "@astrojs/astro2tsx": ["@astrojs/astro2tsx@0.1.1", "", { "dependencies": { "@emnapi/core": "1.11.3", "@napi-rs/wasm-runtime": "1.2.4" } }, "sha512-VNhvoKzs0FXF3iq+2QVIjTqA6awKDKpd2U7khYg3AhcxjM1KMINEma4IeqQnMqJUakw0MNQygntLvLmSPS5pLA=="],
 

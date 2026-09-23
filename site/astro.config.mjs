@@ -33,6 +33,9 @@ export default defineConfig({
       favicon: 'https://aleph.garden/favicon.svg',
       description: 'A Solid pod whose storage is one RDF quad store. Part of Aleph Garden.',
       social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/aleph-garden/quadpod' }],
+      // Starlight appends the entry's path, which is relative to site/ and climbs
+      // out of it to the repository's docs/; the URL resolves the `..`.
+      editLink: { baseUrl: 'https://github.com/aleph-garden/quadpod/edit/main/site/' },
       plugins: [aleph({ project: 'quadpod' })],
       sidebar: [
         {

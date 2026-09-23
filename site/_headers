@@ -1,0 +1,5 @@
+# Read by the Worker's static assets from the root of dist/. Build output under
+# a hashed name never changes under that name, so a reader keeps it for a year;
+# pages keep the default, which revalidates.
+/quadpod/docs/_astro/*
+  Cache-Control: public, max-age=31536000, immutable

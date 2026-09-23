@@ -36,7 +36,7 @@ export default defineConfig({
       // Starlight appends the entry's path, which is relative to site/ and climbs
       // out of it to the repository's docs/; the URL resolves the `..`.
       editLink: { baseUrl: 'https://github.com/aleph-garden/quadpod/edit/main/site/' },
-      plugins: [aleph({ project: 'quadpod' })],
+      plugins: [aleph({ project: 'quadpod', prerelease: true })],
       sidebar: [
         {
           label: 'Start',
